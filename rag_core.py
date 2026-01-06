@@ -1,6 +1,6 @@
 import os, json
 import traceback
-from typing import List, Literal, Optional
+from typing import List, Literal, Dict, Optional
 from dotenv import load_dotenv
 from langdetect import detect
 from langchain_community.document_loaders import PyPDFLoader
@@ -19,7 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 # DOCUMENT PROCESSING
 
 class DocumentProcessor:
-    def __init__(self, folder: str = "folder", chunk_size=1000, chunk_overlap=100):
+    def __init__(self, folder: str = "folder", chunk_size=1000, chunk_overlap=80):
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap
@@ -163,7 +163,7 @@ class VectorStoreManager:
             traceback.print_exc()
             return None
 
-    def _sanity_check(self, db: Chroma):
+    def _sanity_check(self):
         """
         Sanity check to verify vector store retrieval works.
         """
@@ -195,7 +195,6 @@ class VectorStoreManager:
 # RETRIEVAL TOOL (RETURNS DOCUMENTS)
 
 def build_retrieval_tool(vectorstore: Chroma):
-
     @tool
     def retrieve_documents(query: str) -> str:
         """
@@ -221,7 +220,6 @@ def build_retrieval_tool(vectorstore: Chroma):
         
         # Retrieve documents
         results = retriever.invoke(query)
-        
         if not results:
             return "No relevant documents found."
         
@@ -230,16 +228,14 @@ def build_retrieval_tool(vectorstore: Chroma):
             f"Document {i+1}:\n{doc.page_content}"
             for i, doc in enumerate(results)
         )
-        
         return formatted
     return retrieve_documents
 
 # MAIN AGENT
 
-
 def build_agent(vectorstore: Chroma):
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
 
     # ---------- Language ----------
     def detect_language(text: str) -> str:
@@ -253,7 +249,7 @@ def build_agent(vectorstore: Chroma):
             f"Translate the following text to {target_lang}:\n{text}"
         ).content
 
-    # ---------- Retrieval Gate ----------
+    #  Retrieval Gate 
     def needs_retrieval(text: str) -> bool:
         trivial = [
             "hello", "hi", "thanks", "thank you",
@@ -277,37 +273,38 @@ def build_agent(vectorstore: Chroma):
 
     # ---------- Faithfulness ----------
     def check_faithfulness(answer: str, docs: List[Document]) -> Dict:
-        prompt = ChatPromptTemplate.from_template("""
-Answer:
-{answer}
-
-Context:
-{context}
-
-Respond strictly in JSON:
-{{"faithful": true | false, "reason": "short explanation"}}
-""")
         context = "\n\n".join(d.page_content for d in docs)
+        prompt = ChatPromptTemplate.from_template("""
+    Answer:
+    {answer}
+
+    Context:
+    {context}
+
+    Respond strictly in JSON:
+    {{"faithful": true | false, "reason": "short explanation"}}
+    """)
+        
         resp = llm.invoke(
             prompt.format(answer=answer, context=context)
         )
         return json.loads(resp.content)
 
-    # ---------- Confidence ----------
+    # Confidence 
     def confidence_score(answer: str, docs: List[Document]) -> Dict:
         prompt = f"""
-Answer:
-{answer}
+    Answer:
+    {answer}
 
-Context:
-{" ".join(d.page_content for d in docs)}
+    Context:
+    {" ".join(d.page_content for d in docs)}
 
-Respond in JSON:
-{{"score": 0.0-1.0, "reason": "why"}}
-"""
+    Respond in JSON:
+    {{"score": 0.0-1.0, "reason": "why"}}
+    """
         return json.loads(llm.invoke(prompt).content)
 
-    # ---------- Citations ----------
+    # Citations 
     def extract_sources(docs: List[Document]) -> List[Dict]:
         sources = []
         for d in docs:
@@ -319,24 +316,23 @@ Respond in JSON:
             })
         return sources
 
-    # ---------- Tools ----------
+    # Retrieval Tools 
     retrieval_tool = build_retrieval_tool(vectorstore)
     tools = [retrieval_tool]
     llm_with_tools = llm.bind_tools(tools)
 
     system_prompt = SystemMessage(content="""
-You are a Nigerian Tax Reform Assistant.
+    You are a Nigerian Tax Reform Assistant.
 
-Rules:
-- Use document retrieval for factual questions
-- Cite sources
-- Do NOT hallucinate
-- If documents are insufficient, say so
-""")
+    Rules:
+    - Use document retrieval for factual questions
+    - Cite sources
+    - Do NOT hallucinate
+    - If documents are insufficient, say so
+    """)
 
-    # ==================================================
+   
     # GRAPH NODES
-    # ==================================================
 
     def assistant(state: MessagesState):
         user_input = state["messages"][-1].content
@@ -381,49 +377,38 @@ Rules:
     builder.add_edge("tools", "assistant")
 
     agent = builder.compile(checkpointer=MemorySaver())
-
-    # ==================================================
-    # PUBLIC QUERY FUNCTION (API SAFE)
-    # ==================================================
-
+   
+    # AGENT QUERY FUNCTION
+   
     def query_agent(user_input: str, thread_id: str = "default") -> Dict:
-
-        result = agent.invoke(
-            {"messages": [HumanMessage(content=user_input)]},
-            config={"configurable": {"thread_id": thread_id}}
-        )
-
-        final_answer = None
-        retrieved_docs = []
-
-        for msg in result["messages"]:
-            if isinstance(msg, AIMessage) and msg.content:
-                final_answer = msg.content
-            if isinstance(msg, ToolMessage):
-                retrieved_docs.extend(msg.content)
-
         user_lang = detect_language(user_input)
+        query = translate(user_input, "English") if user_lang != "en" else user_input
+        
+        messages = [system_prompt,
+                    HumanMessage(content=query)]
+
+        if needs_retrieval(query):
+            refined = rewrite_query(query)
+            messages.append(SystemMessage(content=f"Use retrieval for:\n{refined}"))
+
+        result = llm_with_tools.invoke(messages)
+        
+        # Assume result is AIMessage or ToolMessage
+        final_answer = result.content if hasattr(result, "content") else None
+        retrieved_docs = getattr(result, "content", [])
 
         if retrieved_docs:
             faith = check_faithfulness(final_answer, retrieved_docs)
             conf = confidence_score(final_answer, retrieved_docs)
-
             if not faith["faithful"]:
-                final_answer = (
-                    "I couldn't find sufficient information "
-                    "in the documents to confidently answer this."
-                )
-
+                final_answer = "I couldn't find sufficient info in the documents."
             sources = extract_sources(retrieved_docs)
         else:
             faith = {"faithful": True, "reason": "No retrieval needed"}
             conf = {"score": 1.0, "reason": "Direct answer"}
             sources = []
 
-        final_answer = (
-            final_answer if user_lang == "en"
-            else translate(final_answer, user_lang)
-        )
+        final_answer = final_answer if user_lang == "en" else translate(final_answer, user_lang)
 
         return {
             "answer": final_answer,
@@ -434,7 +419,65 @@ Rules:
             "sources": sources
         }
 
-    return query_agent
+    # Return everything for modular testing 
+    return {
+        "query_agent": query_agent,
+        "detect_language": detect_language,
+        "translate": translate,
+        "needs_retrieval": needs_retrieval,
+        "rewrite_query": rewrite_query,
+        "check_faithfulness": check_faithfulness,
+        "confidence_score": confidence_score,
+        "extract_sources": extract_sources,
+        "retrieval_tool": retrieval_tool
+    }
+        # result = agent.invoke(
+        #     {"messages": [HumanMessage(content=user_input)]},
+        #     config={"configurable": {"thread_id": thread_id}}
+        # )
+
+        
+        # final_answer = None
+        # retrieved_docs = []
+
+        # for msg in result["messages"]:
+        #     if isinstance(msg, AIMessage) and msg.content:
+        #         final_answer = msg.content
+        #     if isinstance(msg, ToolMessage):
+        #         retrieved_docs.extend(msg.content)
+
+    #     if retrieved_docs:
+    #         faith = check_faithfulness(final_answer, retrieved_docs)
+    #         conf = confidence_score(final_answer, retrieved_docs)
+
+    #         if not faith["faithful"]:
+    #             final_answer = (
+    #                 "I couldn't find sufficient information "
+    #                 "in the documents to confidently answer this."
+    #             )
+
+    #         sources = extract_sources(retrieved_docs)
+    #     else:
+    #         faith = {"faithful": True, "reason": "No retrieval needed"}
+    #         conf = {"score": 1.0, "reason": "Direct answer"}
+    #         sources = []
+
+    #     final_answer = (
+    #         final_answer if user_lang == "en"
+    #         else translate(final_answer, user_lang)
+    #     )
+
+    #     return {
+    #         "answer": final_answer,
+    #         "language": user_lang,
+    #         "faithful": faith["faithful"],
+    #         "faithfulness_reason": faith["reason"],
+    #         "confidence": conf["score"],
+    #         "sources": sources
+    #     }
+
+    # return query_agent
+
 
 
 # SYSTEM BUILDER
