@@ -19,7 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 # DOCUMENT PROCESSING
 
 class DocumentProcessor:
-    def __init__(self, folder: str, chunk_size=1000, chunk_overlap=100):
+    def __init__(self, folder: str = "folder", chunk_size=1000, chunk_overlap=100):
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap
@@ -101,7 +101,7 @@ class VectorStoreManager:
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
         self.persist_directory = persist_directory
 
-    def create(self, chunks: List[Document]) -> Optional[Chroma]:
+    def create_vectorstore(self, chunks: List[Document]) -> Optional[Chroma]:
         """
         Create a Chroma vector store from document chunks and save it.
 
@@ -113,17 +113,20 @@ class VectorStoreManager:
         """
         try:
             total_chunks = len(chunks)
-            db = Chroma.from_documents(
+            self.vectorstore = Chroma.from_documents(
                 documents=chunks,
                 embedding=self.embeddings,
                 persist_directory=self.persist_directory
             )
 
             print("\n✅ SUCCESS! Vector database built and saved to", self.persist_directory)
-            print(f"Ready with {total_chunks} searchable chunks from your psychology documents!")
+            print(f"Ready with {total_chunks} searchable chunks from your Tax Reform Bills documents!")
             print("RAG system is now ready for accurate answers from the documents!\n")
 
-            return db
+            # 🔍 Run sanity check
+            self._sanity_check()
+            
+            return self.vectorstore
 
         except Exception as e:
             print("\n❌ Critical error during vector store build:")
@@ -136,25 +139,100 @@ class VectorStoreManager:
             print("   • Make sure you have an internet connection (needed for embeddings)")
             print("   • Try running again — sometimes it’s a temporary connection issue")
             return None
+    
+    def load_vectorstore(self):
+        """
+        Load an existing vector store from disk.
+        """
+        try:
+            
+            print("Loading existing vector store...")
+            self.vectorstore = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embeddings
+            )
+            print("✅ Vector store loaded!")
+            
+            # 🔍 Run sanity check
+            self._sanity_check()
+
+            return self.vectorstore
+
+        except Exception as e:
+            print("❌ Failed to load vector store:", str(e))
+            traceback.print_exc()
+            return None
+
+    def _sanity_check(self, db: Chroma):
+        """
+        Sanity check to verify vector store retrieval works.
+        """
+        if not self.vectorstore:
+            print("⚠️ Sanity check skipped: vector store not initialized.")
+            return
+        
+        print("\n🔎 Running vector store sanity check...")
+
+        test_query = "What is the VAT rate according to the tax reform bill?"
+
+        results = self.vectorstore.similarity_search(test_query, k=3)
+
+        if not results:
+            print("⚠️ Sanity check FAILED: No documents retrieved.")
+            return
+
+        print(f"✅ Sanity check PASSED: Retrieved {len(results)} documents\n")
+
+        for i, doc in enumerate(results, 1):
+            source = doc.metadata.get("source", "unknown")
+            page = doc.metadata.get("page", "N/A")
+
+            print(f"Result {i}:")
+            print(f"   Source: {source}")
+            print(f"   Page: {page}")
+            print(f"   Preview: {doc.page_content[:200]}...\n")
 
 # RETRIEVAL TOOL (RETURNS DOCUMENTS)
 
 def build_retrieval_tool(vectorstore: Chroma):
 
     @tool
-    def retrieve_documents(query: str) -> List[Document]:
+    def retrieve_documents(query: str) -> str:
         """
-        Retrieve relevant documents from the tax knowledge base.
+        Search for relevant documents in the knowledge base.
+        
+        Use this tool when you need information from the document collection
+        to answer the user's question. Do NOT use this for:
+        - General knowledge questions
+        - Greetings or small talk
+        - Simple calculations
+        
+        Args:
+            query: The search query describing what information is needed
+            
+        Returns:
+            Relevant document excerpts that can help answer the question
         """
+        # Use MMR (Maximum Marginal Relevance) for diverse results
         retriever = vectorstore.as_retriever(
             search_type="mmr",
             search_kwargs={"k": 5, "fetch_k": 10}
         )
-
-        return retriever.invoke(query)
-
+        
+        # Retrieve documents
+        results = retriever.invoke(query)
+        
+        if not results:
+            return "No relevant documents found."
+        
+        # Format results
+        formatted = "\n\n---\n\n".join(
+            f"Document {i+1}:\n{doc.page_content}"
+            for i, doc in enumerate(results)
+        )
+        
+        return formatted
     return retrieve_documents
-
 
 # MAIN AGENT
 
