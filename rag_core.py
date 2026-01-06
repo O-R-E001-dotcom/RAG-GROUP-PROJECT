@@ -480,21 +480,21 @@ def build_agent(vectorstore: Chroma):
 
 
 
-# SYSTEM BUILDER
+# # SYSTEM BUILDER
 
-def build_rag_system(doc_path: str):
-    """
-    Build a complete RAG system from documents.
-    """
-    print(f"\n{'='*60}")
-    print("BUILDING RAG SYSTEM")
-    print(f"{'='*60}\n")
+# def build_rag_system(doc_path: str):
+#     """
+#     Build a complete RAG system from documents.
+#     """
+#     print(f"\n{'='*60}")
+#     print("BUILDING RAG SYSTEM")
+#     print(f"{'='*60}\n")
 
-    processor = DocumentProcessor()
-    docs = processor.load_documents(doc_path)
-    chunks = processor.chunk_documents(docs)
+#     processor = DocumentProcessor()
+#     docs = processor.load_documents(doc_path)
+#     chunks = processor.chunk_documents(docs)
 
-    store = VectorStoreManager().create(chunks)
-    agent = build_agent(store)
+#     store = VectorStoreManager().create(chunks)
+#     agent = build_agent(store)
 
-    return agent
+#     return agent
