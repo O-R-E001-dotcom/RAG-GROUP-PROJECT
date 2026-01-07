@@ -1,0 +1,14 @@
+
+
+fastapi
+uvicorn
+python-dotenv
+langchain
+langchain-openai
+langchain-community
+langgraph
+chromadb
+langdetect
+pydantic
+python-jose 
+passlib[bcrypt]
