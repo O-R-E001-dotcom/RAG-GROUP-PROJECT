@@ -83,8 +83,7 @@
 #             "reason": response.get("faithfulness_reason", ""),
 #             "language": response["language"],
 #             "latency": 0.0  # Placeholder for latency measurement
-#         }
-
+#        
 #     except Exception as e:
 #         raise HTTPException(status_code=500, detail=str(e))
     

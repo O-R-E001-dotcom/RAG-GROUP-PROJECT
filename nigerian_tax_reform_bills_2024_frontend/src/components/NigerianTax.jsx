@@ -6,10 +6,13 @@ const NigerianTax = () => {
   const [formData, setFormData] = useState("");
   const [userMessage, setUserMessage] = useState([]);
   const messageEndRef = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [userMessage]);
+    if (autoScroll) {
+      messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [userMessage, autoScroll]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -36,7 +39,7 @@ const NigerianTax = () => {
     ]);
 
     try {
-      const response = await fetch("", {
+      const response = await fetch("http://localhost:8000/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: msg }),
